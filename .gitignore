@@ -11,4 +11,5 @@ cpolar.log
 /bot写入文档
 *.log
 /docs
-
+/experiments/dedup/results/
+/experiments/dedup/data/

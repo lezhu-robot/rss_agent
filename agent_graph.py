@@ -82,6 +82,14 @@ class RouterDecision(BaseModel):
     )
 
 from tools import fetch_news
+from news_dedup import dedupe_news_payload
+from config import (
+    NEWS_DEDUP_DEBUG,
+    NEWS_DEDUP_EMBEDDING_MODEL,
+    NEWS_DEDUP_ENABLED,
+    NEWS_DEDUP_MODE,
+    NEWS_DEDUP_THRESHOLD,
+)
 from simple_bot import llm_fast, llm_reasoning # Import capability-based LLMs
 import json
 
@@ -239,6 +247,24 @@ def fetcher_node(state: AgentState):
     print(f"🌍 [Fetcher] Fetching news for: {pref}")
     
     news_data = fetch_news(pref)
+
+    # 可插拔去重：默认由 config 开关控制，关闭时不影响原有流程
+    if NEWS_DEDUP_ENABLED:
+        news_data, dedup_meta, _ = dedupe_news_payload(
+            news_data,
+            enabled=NEWS_DEDUP_ENABLED,
+            mode=NEWS_DEDUP_MODE,
+            threshold=NEWS_DEDUP_THRESHOLD,
+            debug=NEWS_DEDUP_DEBUG,
+            embedding_model=NEWS_DEDUP_EMBEDDING_MODEL,
+        )
+        print(
+            "🧹 [Fetcher] Dedup done: "
+            f"in={dedup_meta.get('input_count')} "
+            f"out={dedup_meta.get('output_count')} "
+            f"rate={dedup_meta.get('dedup_rate')} "
+            f"fail_open={dedup_meta.get('fail_open')}"
+        )
     
     print(f"✅ [Fetcher] Got data (length: {len(str(news_data))})")
     # 关键：当需要重新抓取时，显式清空旧结构化结果，避免 writer 命中 checkpointer 残留 state
