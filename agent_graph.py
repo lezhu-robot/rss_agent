@@ -4,9 +4,9 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 # --- 长度控制常量（视觉宽度，1中文字=2英文字母） ---
-HEADLINE_LENGTH_MIN = 20  # 今日头条最短视觉宽度（中文字数）
-HEADLINE_LENGTH_MAX = 30  # 今日头条最长视觉宽度（中文字数）
-HEADLINE_LEN_MAX = 35     # 今日头条每条的字符数硬上限
+HEADLINE_LENGTH_MIN = 16  # 今日头条最短视觉宽度（中文字数）
+HEADLINE_LENGTH_MAX = 24  # 今日头条最长视觉宽度（中文字数）
+HEADLINE_LEN_MAX = 30     # 今日头条每条的字符数硬上限
 SUMMARY_LENGTH_MIN = 45   # 深度专题摘要最短视觉宽度（中文字数）
 SUMMARY_LENGTH_MAX = 60   # 深度专题摘要最长视觉宽度（中文字数）
 SUMMARY_LEN_MAX = 65      # 深度专题摘要的字符数硬上限
