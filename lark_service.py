@@ -8,9 +8,9 @@ import time
 
 from agent_graph import graph
 from langchain_core.messages import HumanMessage
-from messaging import reply_message, update_message
+from messaging import reply_message, send_message, update_message
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import date, datetime, timezone as dt_timezone
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 from database import (
     save_cached_news,
     get_cached_news,
@@ -25,6 +25,15 @@ import threading
 from pytz import timezone
 from collections import deque
 from lark_card_builder import build_manage_subscribe_card
+from group_config_loader import (
+    ensure_group_storage_files,
+    ensure_runtime_state,
+    load_group_configs,
+    load_group_runtime,
+    parse_runtime_datetime,
+    save_group_runtime,
+    serialize_runtime_datetime,
+)
 
 # 事件去重队列
 processed_events = deque(maxlen=100)
@@ -33,6 +42,7 @@ processed_events = deque(maxlen=100)
 beijing_tz = timezone('Asia/Shanghai')
 scheduler = BackgroundScheduler(timezone=beijing_tz)
 daily_archive_push_lock = threading.Lock()
+group_delivery_poll_lock = threading.Lock()
 manage_subscribe_state_lock = threading.Lock()
 pending_manage_subscriptions = {}
 manage_subscribe_action_dedup_lock = threading.Lock()
@@ -48,6 +58,12 @@ def _event_log(**fields):
     payload = {"ts": datetime.now(dt_timezone.utc).isoformat(timespec="milliseconds")}
     payload.update(fields)
     print(f"[EventLog] {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}")
+
+
+def _group_push_log(**fields):
+    payload = {"ts": datetime.now(dt_timezone.utc).isoformat(timespec="milliseconds")}
+    payload.update(fields)
+    print(f"[GroupPush] {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}")
 
 
 def _extract_operator_id(body):
@@ -151,6 +167,61 @@ def _is_duplicate_expand_action(action_key: str) -> bool:
 
 from config import DAILY_NEWS_CATEGORIES
 
+
+def _advance_next_run(due_at: datetime, interval_minutes: int, reference_time: datetime) -> datetime:
+    next_run_at = due_at
+    step = timedelta(minutes=interval_minutes)
+    while next_run_at <= reference_time:
+        next_run_at += step
+    return next_run_at
+
+
+def _is_within_group_delivery_window(group_config: dict, current_local_time: datetime) -> bool:
+    start_hour = group_config.get("start_hour")
+    end_hour = group_config.get("end_hour")
+    current_hour = current_local_time.hour
+
+    if start_hour is None and end_hour is None:
+        return True
+    if start_hour is None:
+        return current_hour < end_hour
+    if end_hour is None:
+        return current_hour >= start_hour
+    if start_hour < end_hour:
+        return start_hour <= current_hour < end_hour
+    return current_hour >= start_hour or current_hour < end_hour
+
+
+def _select_group_categories(group_config: dict, runtime_state: dict):
+    preferences = group_config["preferences"]
+    if group_config["delivery_mode"] == "all":
+        return list(preferences), runtime_state.get("round_robin_index", 0)
+
+    current_index = runtime_state.get("round_robin_index", 0) % len(preferences)
+    return [preferences[current_index]], current_index
+
+
+def _get_or_generate_category_content(category: str):
+    today = date.today().isoformat()
+    cached = get_cached_news(category, today)
+    if cached and cached.get("content"):
+        return cached["content"], "cache"
+
+    category_user_id = f"system_daily_bot_{category}"
+    content, briefing_data = run_agent(
+        user_id=category_user_id,
+        text="生成日报",
+        force_refresh=True,
+        user_preference=category,
+    )
+
+    if content:
+        briefing_data_str = json.dumps(briefing_data, ensure_ascii=False) if briefing_data else None
+        save_cached_news(category, content, today, briefing_data_str)
+        return content, "generated"
+
+    raise ValueError(f"generated empty content for category={category}")
+
 def generate_news_task(force=True):
     """
     👨‍🍳 厨师任务：每隔2小时（或启动时）生成新闻并存入数据库（不推送）
@@ -233,6 +304,129 @@ def daily_archive_and_push_job():
     finally:
         daily_archive_push_lock.release()
 
+
+def poll_group_delivery_task():
+    """每分钟轮询一次群配置，按 next_run_at 触发群推送。"""
+    if not group_delivery_poll_lock.acquire(blocking=False):
+        print("⏩ [GroupPush] poll_group_delivery_task is already running, skipping this trigger.")
+        return
+
+    runtime_dirty = False
+    now_utc = datetime.now(dt_timezone.utc)
+    runtime_data = {}
+
+    try:
+        ensure_group_storage_files()
+        group_configs = load_group_configs()
+        runtime_data = load_group_runtime()
+
+        for group_config in group_configs:
+            chat_id = group_config["chat_id"]
+            group_name = group_config["name"]
+            runtime_state, state_changed = ensure_runtime_state(runtime_data, chat_id, now_utc)
+            runtime_dirty = runtime_dirty or state_changed
+
+            next_run_at = parse_runtime_datetime(runtime_state.get("next_run_at")) or now_utc
+            if runtime_state.get("next_run_at") != serialize_runtime_datetime(next_run_at):
+                runtime_state["next_run_at"] = serialize_runtime_datetime(next_run_at)
+                runtime_dirty = True
+
+            base_log_fields = {
+                "chat_id": chat_id,
+                "group_name": group_name,
+                "preferences": group_config["preferences"],
+                "delivery_mode": group_config["delivery_mode"],
+                "interval_minutes": group_config["interval_minutes"],
+            }
+
+            if not group_config["enabled"]:
+                _group_push_log(
+                    send_result="skipped_disabled",
+                    selected_categories=[],
+                    next_run_at=runtime_state.get("next_run_at"),
+                    error=None,
+                    **base_log_fields,
+                )
+                continue
+
+            if next_run_at > now_utc:
+                continue
+
+            current_local_time = now_utc.astimezone(timezone(group_config["timezone"]))
+            selected_categories, current_round_robin_index = _select_group_categories(group_config, runtime_state)
+
+            if not _is_within_group_delivery_window(group_config, current_local_time):
+                next_due = _advance_next_run(next_run_at, group_config["interval_minutes"], now_utc)
+                runtime_state["next_run_at"] = serialize_runtime_datetime(next_due)
+                runtime_state["last_error"] = None
+                runtime_dirty = True
+                _group_push_log(
+                    send_result="skipped_outside_window",
+                    selected_categories=selected_categories,
+                    next_run_at=runtime_state["next_run_at"],
+                    error=None,
+                    **base_log_fields,
+                )
+                continue
+
+            delivery_errors = []
+            for category in selected_categories:
+                try:
+                    content, content_source = _get_or_generate_category_content(category)
+                    sent = send_message(chat_id, content, receive_id_type="chat_id")
+                    if not sent:
+                        raise RuntimeError(f"send_message returned False for category={category}")
+
+                    _group_push_log(
+                        send_result="sent",
+                        selected_categories=[category],
+                        content_source=content_source,
+                        next_run_at=runtime_state.get("next_run_at"),
+                        error=None,
+                        **base_log_fields,
+                    )
+                except Exception as exc:
+                    delivery_errors.append(f"{category}: {exc}")
+
+            next_due = _advance_next_run(next_run_at, group_config["interval_minutes"], now_utc)
+            runtime_state["next_run_at"] = serialize_runtime_datetime(next_due)
+            runtime_dirty = True
+
+            if delivery_errors:
+                runtime_state["last_error"] = " | ".join(delivery_errors)
+                _group_push_log(
+                    send_result="failed",
+                    selected_categories=selected_categories,
+                    next_run_at=runtime_state["next_run_at"],
+                    error=runtime_state["last_error"],
+                    **base_log_fields,
+                )
+                continue
+
+            runtime_state["last_sent_at"] = serialize_runtime_datetime(now_utc)
+            runtime_state["last_success_at"] = serialize_runtime_datetime(now_utc)
+            runtime_state["last_error"] = None
+            if group_config["delivery_mode"] == "round_robin":
+                runtime_state["round_robin_index"] = (current_round_robin_index + 1) % len(group_config["preferences"])
+
+            runtime_dirty = True
+            _group_push_log(
+                send_result="success",
+                selected_categories=selected_categories,
+                next_run_at=runtime_state["next_run_at"],
+                error=None,
+                **base_log_fields,
+            )
+    except Exception as exc:
+        _group_push_log(send_result="poll_failed", error=str(exc))
+    finally:
+        if runtime_dirty:
+            try:
+                save_group_runtime(runtime_data)
+            except Exception as exc:
+                _group_push_log(send_result="runtime_save_failed", error=str(exc))
+        group_delivery_poll_lock.release()
+
 # 使用 FastAPI 推荐的 lifespan 方式（用于优雅关闭和避免重复初始化）
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -241,8 +435,6 @@ async def lifespan(app: FastAPI):
     init_db()
     
     print("⏰ Starting Scheduler...")
-    from datetime import datetime, timedelta
-    
     # # 1. 厨师任务：北京时间 8:00 - 22:00，每2小时做一次饭
     # scheduler.add_job(generate_news_task, 'cron', hour='8-22/2', minute=0, timezone=beijing_tz)
     # 1. 厨师任务：北京时间每天 8:00 执行一次
@@ -261,6 +453,18 @@ async def lifespan(app: FastAPI):
         hour=9,
         minute=10,
         timezone=beijing_tz,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
+        poll_group_delivery_task,
+        'interval',
+        id='group_delivery_poll_job',
+        minutes=1,
+        timezone=beijing_tz,
+        next_run_time=datetime.now(beijing_tz) + timedelta(seconds=15),
         replace_existing=True,
         max_instances=1,
         coalesce=True,

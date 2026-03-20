@@ -9,6 +9,24 @@ load_dotenv()
 app_id = os.getenv("LARK_APP_ID")
 app_secret = os.getenv("LARK_APP_SECRET")
 
+
+def _prepare_message_payload(content):
+    msg_type = "text"
+    final_content = content
+
+    try:
+        if isinstance(content, str) and content.strip().startswith("{") and '"header"' in content:
+            msg_type = "interactive"
+            final_content = content
+        else:
+            text_content = str(content) if content is not None else ""
+            final_content = json.dumps({"text": text_content}, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️ Message Payload Build Error: {e}")
+        final_content = json.dumps({"text": str(content)}, ensure_ascii=False)
+
+    return msg_type, final_content
+
 def get_tenant_access_token():
     url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
     headers = {"Content-Type": "application/json; charset=utf-8"}
@@ -31,30 +49,14 @@ def reply_message(message_id, content):
         token = get_tenant_access_token()
         if not token:
             print("❌ Cannot send message without token")
-            return
+            return False
             
         url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reply"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8"
         }
-        # 智能检测：是否为卡片 JSON
-        msg_type = "text"
-        final_content = content
-        
-        try:
-            # 简单的启发式检查：如果是 JSON 且包含 header/elements，就认为是卡片
-            if isinstance(content, str) and content.strip().startswith("{") and '"header"' in content:
-                msg_type = "interactive"
-                final_content = content
-            else:
-                # 普通文本需要包一层
-                # 确保 content 是字符串
-                text_content = str(content) if content is not None else ""
-                final_content = json.dumps({"text": text_content}, ensure_ascii=False)
-        except Exception as e:
-            print(f"⚠️ JSON Check Error: {e}")
-            final_content = json.dumps({"text": str(content)}, ensure_ascii=False)
+        msg_type, final_content = _prepare_message_payload(content)
 
         payload = {
             "content": final_content,
@@ -67,23 +69,28 @@ def reply_message(message_id, content):
         
         if resp.status_code != 200:
             print(f"❌ Lark API Error: {resp.text}")
+            return False
         else:
             # 飞书 API 即使 200 也可能在 body 里报错
             res_json = resp.json()
             if res_json.get("code") != 0:
                 print(f"❌ Lark Logic Error: {res_json}")
+                return False
             else:
-                short_content = content[:20].replace('\n', ' ')
+                short_content = str(content)[:20].replace('\n', ' ')
                 print(f"✅ Reply Sent: {short_content}...")
+                return True
             
     except Exception as e:
         print(f"❌ Exception in reply_message: {str(e)}")
+        return False
 
-def send_message(receive_id, content):
-    """主动发送消息 (用于定时推送)"""
+def send_message(receive_id, content, receive_id_type="open_id"):
+    """主动发送消息 (支持用户 open_id 和群 chat_id)。"""
     try:
         token = get_tenant_access_token()
-        if not token: return
+        if not token:
+            return False
         
         url = "https://open.feishu.cn/open-apis/im/v1/messages"
         headers = {
@@ -91,15 +98,8 @@ def send_message(receive_id, content):
             "Content-Type": "application/json; charset=utf-8"
         }
         
-        params = {"receive_id_type": "open_id"}
-        
-        # 智能检测卡片
-        msg_type = "text"
-        final_content = content
-        if content.strip().startswith("{") and '"header"' in content:
-            msg_type = "interactive"
-        else:
-            final_content = json.dumps({"text": content})
+        params = {"receive_id_type": receive_id_type}
+        msg_type, final_content = _prepare_message_payload(content)
 
         payload = {
             "receive_id": receive_id,
@@ -108,13 +108,21 @@ def send_message(receive_id, content):
         }
         
         resp = requests.post(url, headers=headers, params=params, json=payload)
-        if resp.status_code != 200 or resp.json().get("code") != 0:
+        if resp.status_code != 200:
             print(f"❌ Push Failed: {resp.text}")
+            return False
+
+        body = resp.json()
+        if body.get("code") != 0:
+            print(f"❌ Push Failed: {body}")
+            return False
         else:
-            print(f"📤 Pushed to {receive_id}: {msg_type}")
+            print(f"📤 Pushed to {receive_id_type}:{receive_id}: {msg_type}")
+            return True
             
     except Exception as e:
         print(f"❌ Exception in send_message: {str(e)}")
+        return False
 
 
 def update_message(message_id, content):
@@ -130,12 +138,7 @@ def update_message(message_id, content):
             "Content-Type": "application/json; charset=utf-8"
         }
 
-        msg_type = "text"
-        final_content = content
-        if isinstance(content, str) and content.strip().startswith("{") and '"header"' in content:
-            msg_type = "interactive"
-        else:
-            final_content = json.dumps({"text": str(content)}, ensure_ascii=False)
+        msg_type, final_content = _prepare_message_payload(content)
 
         payload = {
             "content": final_content,

@@ -87,8 +87,11 @@ https://your-domain/api/lark/event
 项目通过 `docker-compose.yml` 挂载本地目录保存数据：
 
 - `./data:/app/data`
+- `./group_config.json:/app/group_config.json`
+- `./group_runtime.json:/app/group_runtime.json`
 
 SQLite 数据库文件会保存在 `data` 目录下，容器重建后仍会保留。
+群推送配置和运行时进度也会与宿主机本地文件自动同步，便于直接在仓库内查看和编辑。
 
 ## 常用命令
 

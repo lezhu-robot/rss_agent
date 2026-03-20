@@ -14,6 +14,9 @@ services:
     volumes:
       # 持久化数据库文件
       - ./data:/app/data
+      # 群推送配置与运行时状态：宿主机与容器自动同步
+      - ./group_config.json:/app/group_config.json
+      - ./group_runtime.json:/app/group_runtime.json
       # 如果需要修改代码后自动重载，可以挂载代码目录（生产环境不推荐）
       # - .:/app
     restart: unless-stopped

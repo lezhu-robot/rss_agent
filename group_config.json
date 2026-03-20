@@ -1,0 +1,24 @@
+[
+  {
+    "chat_id": "oc_39ec90b2c09a72ae32fa16fd5a3dc77c",
+    "name": "新闻bot改进讨论",
+    "enabled": true,
+    "preferences": [
+      "MUSIC","GAMES"
+    ],
+    "interval_minutes": 120,
+    "delivery_mode": "all",
+    "timezone": "Asia/Shanghai"
+  }
+    {
+    "chat_id": "oc_06a5a7810a82331adc719af6fd993be3",
+    "name": "AI News Daily",
+    "enabled": true,
+    "preferences": [
+      "AI"
+    ],
+    "interval_minutes": 120,
+    "delivery_mode": "all",
+    "timezone": "Asia/Shanghai"
+  }
+]
