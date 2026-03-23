@@ -37,7 +37,6 @@ def fetch_news(
     end_dt_str = format_news_api_datetime(end_dt)
     
     payload = {
-        "keyword": category,
         "category": category,
         "startDateTime": start_dt_str,
         "endDateTime": end_dt_str,
