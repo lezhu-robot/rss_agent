@@ -258,6 +258,19 @@ def _run_group_delivery_once(
 
             deduplicated_news = _deduplicate_articles(news_by_category)
             has_news = any(articles for articles in deduplicated_news.values())
+            if not has_news:
+                runtime_state["last_window_end_at"] = serialize_runtime_datetime(window_end)
+                runtime_state["last_error"] = None
+                runtime_dirty = True
+                _log(
+                    send_result="skipped_no_news",
+                    content_type="no_news",
+                    next_run_at=runtime_state["next_run_at"],
+                    error=None,
+                    **base_log_fields,
+                )
+                continue
+
             message_text = format_group_news_message(
                 news_by_category=deduplicated_news,
                 window_start=window_start,
@@ -283,8 +296,8 @@ def _run_group_delivery_once(
             runtime_state["last_error"] = None
             runtime_dirty = True
             _log(
-                send_result="success" if has_news else "no_news_sent",
-                content_type="news" if has_news else "no_news",
+                send_result="success",
+                content_type="news",
                 next_run_at=runtime_state["next_run_at"],
                 error=None,
                 **base_log_fields,

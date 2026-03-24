@@ -1,3 +1,5 @@
+import json
+import re
 from datetime import datetime
 from typing import Dict, List
 
@@ -8,14 +10,6 @@ def _format_window_label(window_start: datetime, window_end: datetime, timezone_
     tz = timezone(timezone_name)
     start_local = window_start.astimezone(tz)
     end_local = window_end.astimezone(tz)
-    duration_minutes = max(int((window_end - window_start).total_seconds() // 60), 0)
-
-    if duration_minutes and duration_minutes % 60 == 0:
-        duration_label = f"过去 {duration_minutes // 60} 小时"
-    elif duration_minutes:
-        duration_label = f"过去 {duration_minutes} 分钟"
-    else:
-        duration_label = "当前时间窗"
 
     if start_local.date() == end_local.date():
         window_label = (
@@ -26,38 +20,94 @@ def _format_window_label(window_start: datetime, window_end: datetime, timezone_
             f"{start_local.strftime('%m-%d %H:%M')} - {end_local.strftime('%m-%d %H:%M')}"
         )
 
-    return f"{duration_label}新闻更新（{window_label}）"
+    return f"最新新闻（北京时间 {window_label}）"
 
 
-def _format_article_line(article: dict, index: int, timezone_name: str) -> List[str]:
-    lines = [f"{index}. {article['title']}"]
+def _escape_lark_md_text(text: str) -> str:
+    escaped = str(text or "")
+    escaped = escaped.replace("\\", "\\\\")
+    escaped = escaped.replace("[", "\\[").replace("]", "\\]")
+    escaped = escaped.replace("(", "\\(").replace(")", "\\)")
+    return escaped
 
-    meta_parts = []
-    if article.get("sourceName"):
-        meta_parts.append(f"来源：{article['sourceName']}")
 
-    published_at = article.get("publishedAt")
-    if published_at:
-        try:
-            parsed = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-            local_dt = parsed.astimezone(timezone(timezone_name))
-            meta_parts.append(f"时间：{local_dt.strftime('%m-%d %H:%M')}")
-        except Exception:
-            meta_parts.append(f"时间：{published_at}")
+def _compact_summary(summary: str, title: str, max_length: int = 96) -> str:
+    compact = " ".join(str(summary or "").split())
+    compact = re.sub(r"^(?:据悉|报道称|消息称|据[^，。；:：]{1,24}(?:报道|消息|称))[：:，, ]*", "", compact)
+    compact = re.sub(r"^[【\[][^】\]]+[】\]]\s*", "", compact)
 
-    if meta_parts:
-        lines.append(" | ".join(meta_parts))
+    title_text = " ".join(str(title or "").split())
+    if title_text and compact.startswith(title_text):
+        compact = compact[len(title_text):].lstrip("：:，,;；。 ")
 
-    summary = (article.get("summary") or "").strip()
-    if summary:
-        compact_summary = " ".join(summary.split())
-        lines.append(f"摘要：{compact_summary}")
+    compact = compact.strip(" \t\r\n-—|")
+    language_probe = compact or title_text
+    chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", language_probe))
+    english_chars = len(re.findall(r"[A-Za-z]", language_probe))
+    effective_max_length = max_length * 2 if english_chars > chinese_chars else max_length
 
-    source_url = article.get("sourceURL")
+    if len(compact) > effective_max_length:
+        candidate = compact[:effective_max_length]
+        cut_positions = [
+            candidate.rfind("。"),
+            candidate.rfind("；"),
+            candidate.rfind("，"),
+            candidate.rfind("、"),
+            candidate.rfind(" "),
+        ]
+        natural_cut = max(cut_positions)
+        if natural_cut >= effective_max_length // 2:
+            compact = candidate[:natural_cut]
+        else:
+            compact = candidate[: effective_max_length - 3].rstrip("，,；;：:、 ")
+        compact = compact.rstrip("，,；;：:、 ") + "..."
+    return compact
+
+
+def _parse_local_datetime(published_at: str, timezone_name: str):
+    try:
+        parsed = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
+        return parsed.astimezone(timezone(timezone_name))
+    except Exception:
+        return None
+
+
+def _format_article_time_label(article: dict, window_end: datetime, timezone_name: str) -> str:
+    published_at = str(article.get("publishedAt") or "").strip()
+    local_dt = _parse_local_datetime(published_at, timezone_name)
+    if not local_dt:
+        return published_at
+
+    end_local = window_end.astimezone(timezone(timezone_name))
+    if local_dt.date() == end_local.date():
+        return local_dt.strftime("%H:%M")
+    return local_dt.strftime("%m-%d %H:%M")
+
+
+def _article_sort_key(article: dict, timezone_name: str):
+    local_dt = _parse_local_datetime(str(article.get("publishedAt") or "").strip(), timezone_name)
+    if local_dt:
+        return (1, local_dt.timestamp())
+    return (0, 0)
+
+
+def _format_article_markdown(article: dict, window_end: datetime, timezone_name: str) -> str:
+    title = _escape_lark_md_text(article.get("title") or "")
+    source_url = str(article.get("sourceURL") or "").strip()
+    time_label = _escape_lark_md_text(_format_article_time_label(article, window_end, timezone_name))
+
     if source_url:
-        lines.append(f"链接：{source_url}")
+        title_line = f"{time_label} [{title}]({source_url})" if time_label else f"[{title}]({source_url})"
+    else:
+        title_line = f"{time_label} {title}".strip()
 
-    return lines
+    lines = [title_line]
+
+    summary = _compact_summary(article.get("summary") or "", article.get("title") or "")
+    if summary:
+        lines.append(f"摘要：{_escape_lark_md_text(summary)}")
+
+    return "\n".join(lines)
 
 
 def format_group_news_message(
@@ -69,27 +119,52 @@ def format_group_news_message(
     non_empty_categories = [
         category for category, articles in news_by_category.items() if articles
     ]
+    card = {
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "template": "blue",
+            "title": {
+                "tag": "plain_text",
+                "content": _format_window_label(window_start, window_end, timezone_name),
+            },
+        },
+        "elements": [],
+    }
+
     if not non_empty_categories:
-        return "\n".join(
-            [
-                _format_window_label(window_start, window_end, timezone_name),
-                "",
-                "当前时段暂无相关新闻。",
-            ]
-        ).strip()
+        card["elements"].append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "plain_text",
+                    "content": "当前时段暂无相关新闻。",
+                },
+            }
+        )
+        return json.dumps(card, ensure_ascii=False)
 
-    lines: List[str] = [
-        _format_window_label(window_start, window_end, timezone_name),
-    ]
-
+    all_articles: List[dict] = []
     for category in non_empty_categories:
-        lines.append("")
-        lines.append(f"【{category}】")
-        for index, article in enumerate(news_by_category[category], start=1):
-            lines.extend(_format_article_line(article, index, timezone_name))
-            lines.append("")
+        all_articles.extend(news_by_category[category])
 
-        if lines[-1] == "":
-            lines.pop()
+    article_blocks = [
+        _format_article_markdown(article, window_end, timezone_name)
+        for article in sorted(
+            all_articles,
+            key=lambda article: _article_sort_key(article, timezone_name),
+            reverse=True,
+        )
+    ]
+    card["elements"].append(
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "\n\n".join(article_blocks),
+            },
+        }
+    )
 
-    return "\n".join(lines).strip()
+    return json.dumps(card, ensure_ascii=False)
