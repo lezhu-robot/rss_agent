@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timezone as dt_timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from tools import format_news_api_datetime, post_news_search
 
@@ -18,7 +18,7 @@ def _log(log_type: str, **fields):
     print(f"[GroupNewsClient] {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}")
 
 
-def _normalize_article(raw_article: Any, category: str) -> Dict[str, Any]:
+def _normalize_article(raw_article: Any, category: Optional[str]) -> Dict[str, Any]:
     if not isinstance(raw_article, dict):
         raise ValueError(f"article must be an object, got {type(raw_article).__name__}")
 
@@ -27,7 +27,7 @@ def _normalize_article(raw_article: Any, category: str) -> Dict[str, Any]:
     published_at = str(raw_article.get("publishedAt") or "").strip()
     summary = str(raw_article.get("summary") or "").strip()
     source_name = str(raw_article.get("sourceName") or "").strip()
-    article_category = str(raw_article.get("category") or category).strip() or category
+    article_category = str(raw_article.get("category") or category or "UNCATEGORIZED").strip() or "UNCATEGORIZED"
 
     if not title:
         raise ValueError("article title is empty")
@@ -52,18 +52,29 @@ def _normalize_article(raw_article: Any, category: str) -> Dict[str, Any]:
     return normalized
 
 
-def fetch_group_news(category: str, start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
+def fetch_group_news(
+    category: Optional[str],
+    start_dt: datetime,
+    end_dt: datetime,
+    keyword_groups: Optional[List[List[str]]] = None,
+    keyword_group_mode: str = "OR",
+) -> List[Dict[str, Any]]:
     payload = {
-        "category": category,
         "startDateTime": format_news_api_datetime(start_dt),
         "endDateTime": format_news_api_datetime(end_dt),
         "sortOrder": "newest",
         "includeContent": False,
     }
+    if category:
+        payload["category"] = category
+    if keyword_groups:
+        payload["keywordGroups"] = keyword_groups
+        payload["groupMode"] = keyword_group_mode
 
     _log(
         "request",
         category=category,
+        keyword_groups=keyword_groups,
         startDateTime=payload["startDateTime"],
         endDateTime=payload["endDateTime"],
         sortOrder=payload["sortOrder"],

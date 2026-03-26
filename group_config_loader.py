@@ -115,8 +115,10 @@ def build_default_runtime_state(now: datetime = None) -> Dict[str, Any]:
 
 
 def _normalize_preferences(raw_preferences: Any) -> Tuple[List[str], List[str]]:
-    if not isinstance(raw_preferences, list) or not raw_preferences:
-        return [], ["preferences must be a non-empty array"]
+    if raw_preferences is None:
+        return [], []
+    if not isinstance(raw_preferences, list):
+        return [], ["preferences must be an array"]
 
     normalized: List[str] = []
     seen = set()
@@ -136,9 +138,27 @@ def _normalize_preferences(raw_preferences: Any) -> Tuple[List[str], List[str]]:
             seen.add(category)
             normalized.append(category)
 
-    if not normalized:
-        errors.append("preferences resolved to empty array")
+    return normalized, errors
 
+
+def _normalize_keyword_groups(raw_keyword_groups: Any) -> Tuple[List[List[str]], List[str]]:
+    if raw_keyword_groups is None:
+        return [], []
+    if not isinstance(raw_keyword_groups, list):
+        return [], ["keyword_groups must be an array"]
+    
+    normalized: List[List[str]] = []
+    errors = []
+    
+    for group in raw_keyword_groups:
+        if not isinstance(group, list):
+            errors.append("each item in keyword_groups must be an array of strings")
+            continue
+        
+        valid_group = [str(k).strip() for k in group if str(k).strip()]
+        if valid_group:
+            normalized.append(valid_group)
+            
     return normalized, errors
 
 
@@ -181,6 +201,8 @@ def _validate_group_config_item(item: Any, index: int, seen_chat_ids: set):
     name = item.get("name")
     enabled = item.get("enabled")
     raw_preferences = item.get("preferences")
+    raw_keyword_groups = item.get("keyword_groups")
+    keyword_group_mode = str(item.get("keyword_group_mode", "OR")).strip().upper()
     interval_minutes = item.get("interval_minutes")
     delivery_mode = item.get("delivery_mode")
     timezone_name = item.get("timezone")
@@ -203,6 +225,15 @@ def _validate_group_config_item(item: Any, index: int, seen_chat_ids: set):
 
     preferences, preference_errors = _normalize_preferences(raw_preferences)
     errors.extend(preference_errors)
+
+    keyword_groups, keyword_errors = _normalize_keyword_groups(raw_keyword_groups)
+    errors.extend(keyword_errors)
+
+    if not preferences and not keyword_groups:
+        errors.append("at least one of preferences or keyword_groups must be provided and non-empty")
+
+    if keyword_group_mode not in {"AND", "OR"}:
+        errors.append("keyword_group_mode must be 'AND' or 'OR'")
 
     if not isinstance(interval_minutes, int) or interval_minutes <= 0:
         errors.append("interval_minutes must be an integer greater than 0")
@@ -233,6 +264,8 @@ def _validate_group_config_item(item: Any, index: int, seen_chat_ids: set):
         "name": name,
         "enabled": enabled,
         "preferences": preferences,
+        "keyword_groups": keyword_groups,
+        "keyword_group_mode": keyword_group_mode,
         "interval_minutes": interval_minutes,
         "delivery_mode": delivery_mode,
         "timezone": timezone_name,

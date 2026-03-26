@@ -3,11 +3,22 @@
     "chat_id": "oc_39ec90b2c09a72ae32fa16fd5a3dc77c",
     "name": "新闻bot改进讨论",
     "enabled": true,
-    "preferences": [
-      "MUSIC",
-      "GAMES"
+    "preferences": [],
+    "keyword_groups": [
+      [
+        "YouTube",
+        "YTB",
+        "Instagram",
+        "IG",
+        "Facebook",
+        "FB",
+        "Meta",
+        "Twitter"
+      ]
     ],
+    "keyword_group_mode": "OR",
     "interval_minutes": 60,
+    "overlap_minutes": 2880,
     "delivery_mode": "all",
     "timezone": "Asia/Shanghai"
   },

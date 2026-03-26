@@ -122,15 +122,38 @@ def _deduplicate_articles(news_by_category: Dict[str, List[dict]]) -> Dict[str, 
 
 def _collect_group_news(
     selected_categories: List[str],
+    keyword_groups: List[List[str]],
+    keyword_group_mode: str,
     window_start: datetime,
     window_end: datetime,
 ) -> Tuple[Dict[str, List[dict]], List[str]]:
     news_by_category: Dict[str, List[dict]] = {}
     errors: List[str] = []
 
+    if not selected_categories and keyword_groups:
+        try:
+            news_by_category["ALL"] = fetch_group_news(
+                category=None,
+                start_dt=window_start,
+                end_dt=window_end,
+                keyword_groups=keyword_groups,
+                keyword_group_mode=keyword_group_mode,
+            )
+        except GroupNewsClientError as exc:
+            errors.append(f"ALL: {exc}")
+        except Exception as exc:
+            errors.append(f"ALL: unexpected_error={exc}")
+        return news_by_category, errors
+
     for category in selected_categories:
         try:
-            news_by_category[category] = fetch_group_news(category, window_start, window_end)
+            news_by_category[category] = fetch_group_news(
+                category=category,
+                start_dt=window_start,
+                end_dt=window_end,
+                keyword_groups=keyword_groups,
+                keyword_group_mode=keyword_group_mode,
+            )
         except GroupNewsClientError as exc:
             errors.append(f"{category}: {exc}")
         except Exception as exc:
@@ -190,6 +213,8 @@ def _run_group_delivery_once(
                 runtime_dirty = True
 
             selected_categories = list(group_config["preferences"])
+            keyword_groups = group_config.get("keyword_groups", [])
+            keyword_group_mode = group_config.get("keyword_group_mode", "OR")
             window_start = _compute_window_start(
                 runtime_state=runtime_state,
                 interval_minutes=group_config["interval_minutes"],
@@ -201,6 +226,8 @@ def _run_group_delivery_once(
                 "chat_id": chat_id,
                 "group_name": group_name,
                 "preferences": group_config["preferences"],
+                "keyword_groups": keyword_groups,
+                "keyword_group_mode": keyword_group_mode,
                 "delivery_mode": group_config.get("delivery_mode"),
                 "delivery_mode_effective": "merged_all_preferences",
                 "interval_minutes": group_config["interval_minutes"],
@@ -239,6 +266,8 @@ def _run_group_delivery_once(
 
             news_by_category, category_errors = _collect_group_news(
                 selected_categories=selected_categories,
+                keyword_groups=keyword_groups,
+                keyword_group_mode=keyword_group_mode,
                 window_start=window_start,
                 window_end=window_end,
             )
