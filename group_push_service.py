@@ -17,9 +17,13 @@ from group_config_loader import (
 from group_message_formatter import format_group_news_message
 from group_news_client import GroupNewsClientError, fetch_group_news
 from messaging import send_message
+from news_dedup import dedupe_news_payload
 
 
 group_delivery_poll_lock = threading.Lock()
+
+# Maximum number of sent article keys to keep per group (rolling buffer)
+_MAX_SENT_KEYS = 500
 
 
 def _log(**fields):
@@ -118,6 +122,85 @@ def _deduplicate_articles(news_by_category: Dict[str, List[dict]]) -> Dict[str, 
             deduplicated[category].append(article)
 
     return deduplicated
+
+
+def _filter_already_sent(
+    news_by_category: Dict[str, List[dict]],
+    sent_keys: set,
+) -> Tuple[Dict[str, List[dict]], List[str]]:
+    """Remove articles that were already pushed in previous polls (cross-poll dedup).
+    Returns filtered news and the list of NEW dedup keys."""
+    filtered: Dict[str, List[dict]] = {}
+    new_keys: List[str] = []
+    for category, articles in news_by_category.items():
+        filtered[category] = []
+        for article in articles:
+            key = _article_dedupe_key(article)
+            if key in sent_keys:
+                continue
+            filtered[category].append(article)
+            new_keys.append(key)
+    return filtered, new_keys
+
+
+def _apply_semantic_dedup(
+    news_by_category: Dict[str, List[dict]],
+    chat_id: str,
+    group_name: str,
+) -> Dict[str, List[dict]]:
+    """Apply semantic dedup across all categories to merge same-event articles
+    from different sources. Fail-open: returns input unchanged on any error."""
+    # Flatten all articles, remembering their category
+    all_articles: List[dict] = []
+    article_categories: List[str] = []
+    for category, articles in news_by_category.items():
+        for article in articles:
+            all_articles.append(article)
+            article_categories.append(category)
+
+    if len(all_articles) <= 1:
+        return news_by_category
+
+    # Wrap in the payload format expected by dedupe_news_payload
+    fake_payload = {"status": 200, "message": "ok", "data": all_articles}
+    try:
+        deduped_payload, meta, _trace = dedupe_news_payload(
+            fake_payload,
+            enabled=True,
+            mode="semantic",
+        )
+    except Exception as exc:
+        _log(
+            send_result="semantic_dedup_error",
+            chat_id=chat_id,
+            group_name=group_name,
+            error=str(exc),
+        )
+        return news_by_category
+
+    deduped_articles = deduped_payload.get("data", all_articles)
+    dropped = meta.get("dropped_count", 0)
+
+    if dropped > 0:
+        _log(
+            send_result="semantic_dedup_applied",
+            chat_id=chat_id,
+            group_name=group_name,
+            input_count=meta.get("input_count"),
+            output_count=meta.get("output_count"),
+            dropped_count=dropped,
+            dedup_rate=meta.get("dedup_rate"),
+            duration_ms=meta.get("duration_ms"),
+        )
+
+    # Map surviving articles back to their categories
+    deduped_set = set(id(a) for a in deduped_articles)
+    result: Dict[str, List[dict]] = {cat: [] for cat in news_by_category}
+    for article, category in zip(all_articles, article_categories):
+        if id(article) in deduped_set:
+            result[category].append(article)
+
+    return result
 
 
 def _collect_group_news(
@@ -286,6 +369,16 @@ def _run_group_delivery_once(
                 continue
 
             deduplicated_news = _deduplicate_articles(news_by_category)
+
+            # Cross-poll dedup: filter out articles already sent in previous polls
+            prev_sent_keys = set(runtime_state.get("sent_article_keys") or [])
+            deduplicated_news, new_article_keys = _filter_already_sent(
+                deduplicated_news, prev_sent_keys,
+            )
+
+            # Semantic dedup: merge same-event articles from different sources
+            deduplicated_news = _apply_semantic_dedup(deduplicated_news, chat_id, group_name)
+
             has_news = any(articles for articles in deduplicated_news.values())
             if not has_news:
                 runtime_state["last_window_end_at"] = serialize_runtime_datetime(window_end)
@@ -318,6 +411,12 @@ def _run_group_delivery_once(
                     **base_log_fields,
                 )
                 continue
+
+            # Update sent article keys (rolling buffer, keep last N)
+            all_sent_keys = list(prev_sent_keys | set(new_article_keys))
+            if len(all_sent_keys) > _MAX_SENT_KEYS:
+                all_sent_keys = all_sent_keys[-_MAX_SENT_KEYS:]
+            runtime_state["sent_article_keys"] = all_sent_keys
 
             runtime_state["last_sent_at"] = serialize_runtime_datetime(now_utc)
             runtime_state["last_success_at"] = serialize_runtime_datetime(window_end)

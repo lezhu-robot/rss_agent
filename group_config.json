@@ -8,17 +8,52 @@
       [
         "YouTube",
         "YTB",
+        "YT",
+        "油管",
         "Instagram",
         "IG",
+        "Ins",
         "Facebook",
         "FB",
+        "脸书",
         "Meta",
-        "Twitter"
+        "Twitter",
+        "推特",
+        "X"
       ]
     ],
     "keyword_group_mode": "OR",
     "interval_minutes": 60,
-    "overlap_minutes": 2880,
+    "overlap_minutes": 120,
+    "delivery_mode": "all",
+    "timezone": "Asia/Shanghai"
+  },
+  {
+    "chat_id": "oc_fd9668356d0271a07c8e19d25b82b679",
+    "name": "PGC 行业趋势追踪",
+    "enabled": true,
+    "preferences": [],
+    "keyword_groups": [
+      [
+        "YouTube",
+        "YTB",
+        "YT",
+        "油管",
+        "Instagram",
+        "IG",
+        "Ins",
+        "Facebook",
+        "FB",
+        "脸书",
+        "Meta",
+        "Twitter",
+        "推特",
+        "X"
+      ]
+    ],
+    "keyword_group_mode": "OR",
+    "interval_minutes": 60,
+    "overlap_minutes": 120,
     "delivery_mode": "all",
     "timezone": "Asia/Shanghai"
   },
@@ -30,6 +65,7 @@
       "AI"
     ],
     "interval_minutes": 120,
+    "overlap_minutes": 30,
     "delivery_mode": "all",
     "timezone": "Asia/Shanghai"
   }
