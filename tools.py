@@ -6,7 +6,7 @@ from typing import Optional
 
 NEWS_API_URL = os.getenv(
     "NEWS_API_URL",
-    "http://43.134.96.131:9090/api/newsarticles/search",
+    "http://43.165.175.44:9090/api/newsarticles/search",
 )
 
 

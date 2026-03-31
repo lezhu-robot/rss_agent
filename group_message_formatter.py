@@ -35,6 +35,8 @@ def _compact_summary(summary: str, title: str, max_length: int = 96) -> str:
     compact = " ".join(str(summary or "").split())
     compact = re.sub(r"^(?:据悉|报道称|消息称|据[^，。；:：]{1,24}(?:报道|消息|称))[：:，, ]*", "", compact)
     compact = re.sub(r"^[【\[][^】\]]+[】\]]\s*", "", compact)
+    # Strip common social media promotional footers at the end (e.g. "---- 🔗 Follow my...")
+    compact = re.sub(r"\s*-{4,}\s*(?:🔗|Follow|Join|Subscribe|Click).*$", "", compact, flags=re.IGNORECASE)
 
     title_text = " ".join(str(title or "").split())
     if title_text and compact.startswith(title_text):
@@ -92,20 +94,35 @@ def _article_sort_key(article: dict, timezone_name: str):
 
 
 def _format_article_markdown(article: dict, window_end: datetime, timezone_name: str) -> str:
-    title = _escape_lark_md_text(article.get("title") or "")
+    original_title = article.get("title") or ""
+    original_summary = article.get("summary") or ""
+    
+    flat_title = " ".join(original_title.split())
+    flat_summary = " ".join(original_summary.split())
+    title_clean = re.sub(r'[\.。…\s]+$', '', flat_title)
+    
+    if (len(title_clean) > 10 and flat_summary.startswith(title_clean)) or flat_title == flat_summary:
+        # Title is simply a truncated version of the summary (e.g., social media post)
+        # We use the compacted summary as the sole display text
+        title_for_display = _compact_summary(original_summary, "", max_length=120)
+        summary_for_display = ""
+    else:
+        title_for_display = flat_title
+        summary_for_display = _compact_summary(original_summary, flat_title)
+
+    title_escaped = _escape_lark_md_text(title_for_display)
     source_url = str(article.get("sourceURL") or "").strip()
     time_label = _escape_lark_md_text(_format_article_time_label(article, window_end, timezone_name))
 
     if source_url:
-        title_line = f"{time_label} [{title}]({source_url})" if time_label else f"[{title}]({source_url})"
+        title_line = f"{time_label} [{title_escaped}]({source_url})" if time_label else f"[{title_escaped}]({source_url})"
     else:
-        title_line = f"{time_label} {title}".strip()
+        title_line = f"{time_label} {title_escaped}".strip()
 
     lines = [title_line]
 
-    summary = _compact_summary(article.get("summary") or "", article.get("title") or "")
-    if summary:
-        lines.append(f"摘要：{_escape_lark_md_text(summary)}")
+    if summary_for_display:
+        lines.append(f"摘要：{_escape_lark_md_text(summary_for_display)}")
 
     return "\n".join(lines)
 
@@ -154,7 +171,7 @@ def format_group_news_message(
         for article in sorted(
             all_articles,
             key=lambda article: _article_sort_key(article, timezone_name),
-            reverse=True,
+            reverse=False,
         )
     ]
     card["elements"].append(

@@ -11,6 +11,7 @@ services:
       - LLM_REASONING_MODEL=${LLM_REASONING_MODEL}
       - LARK_APP_ID=${LARK_APP_ID}
       - LARK_APP_SECRET=${LARK_APP_SECRET}
+      - NEWS_API_URL=${NEWS_API_URL}
     volumes:
       # 持久化数据库文件
       - ./data:/app/data

@@ -201,7 +201,6 @@ def push_delivery_task():
     today = date.today().isoformat()
     subscriptions = list_all_subscriptions()
     
-    from messaging import send_message
     
     print(f"🛵 [Delivery] Starting daily push dispatch... ({len(subscriptions)} subscriptions)")
     
@@ -225,7 +224,7 @@ def daily_archive_and_push_job():
     try:
         print("⏰ [Scheduler] Starting daily archive + push job...")
         try:
-            asyncio.run(archive_daily_news_to_wiki(user_id=None, notify_user=False))
+            archive_daily_news_to_wiki(user_id=None, notify_user=False)
         except Exception as e:
             print(f"❌ [Scheduler] Archive step failed: {e}")
 
@@ -481,8 +480,6 @@ async def handle_event(request: Request, background_tasks: BackgroundTasks):
 
                 # 由于菜单点击没有 message_id 上下文，我们需要主动发消息给用户
                 # 但这里没有 reply token，通常直接调 send_message
-                from messaging import send_message
-
                 send_message(
                     operator_id,
                     f"✅ 已成功订阅 **{category}** 类别！\n当前已关注：{subscribed_text}\n我们将为您推送以上类别的每日日报。"
@@ -500,7 +497,6 @@ async def handle_event(request: Request, background_tasks: BackgroundTasks):
                     pending_manage_subscriptions[operator_id] = list(subscriptions)
                 manage_card = build_manage_subscribe_card(subscriptions, DAILY_NEWS_CATEGORIES)
 
-                from messaging import send_message
                 send_message(operator_id, manage_card)
 
             # 2. 新增：处理手动触发新闻请求
@@ -512,14 +508,13 @@ async def handle_event(request: Request, background_tasks: BackgroundTasks):
                     branch="request_news",
                 )
                 # 提取类别: REQUEST_MUSIC_NEWS -> MUSIC
-                target_category = event_key.split("_")[1]
+                target_category = event_key.removeprefix("REQUEST_").removesuffix("_NEWS")
                 print(f"🔍 [Menu] 用户 {operator_id} 请求获取：{target_category} 新闻")
 
                 from datetime import date
                 today = date.today().isoformat()
                 cached = get_cached_news(target_category, today)
 
-                from messaging import send_message
                 if cached and cached.get("content"):
                     send_message(operator_id, cached["content"])
                 else:
@@ -593,7 +588,6 @@ async def handle_event(request: Request, background_tasks: BackgroundTasks):
                 subscribed_text = "、".join(ordered) or "无"
                 status_msg = f"✅ 订阅已更新：{subscribed_text}"
                 refreshed_card = build_manage_subscribe_card(ordered, DAILY_NEWS_CATEGORIES)
-                from messaging import send_message
                 send_message(sender_id, status_msg)   # 独立文字消息
                 send_message(sender_id, refreshed_card)  # 新卡片
 
@@ -662,7 +656,7 @@ async def handle_event(request: Request, background_tasks: BackgroundTasks):
             latency_ms=latency_ms,
         )
 
-async def handle_card_action_async(user_id, text, message_id, target, selected_category=None):
+def handle_card_action_async(user_id, text, message_id, target, selected_category=None):
     """处理卡片点击后的异步逻辑"""
     print(
         f"🃏 [Async] Running agent for card action: {text}, "
@@ -682,7 +676,7 @@ async def handle_card_action_async(user_id, text, message_id, target, selected_c
     )
     reply_message(message_id, ai_reply_content)
 
-async def archive_daily_news_to_wiki(user_id=None, notify_user=True):
+def archive_daily_news_to_wiki(user_id=None, notify_user=True):
     """
     后台任务：将今日日报归档到 Wiki
     """
@@ -735,7 +729,6 @@ async def archive_daily_news_to_wiki(user_id=None, notify_user=True):
             print("❌ [Archiver] Archive failed.")
 
         if notify_user and user_id:
-            from messaging import send_message
             send_message(user_id, msg)
         elif notify_user and not user_id:
             print("ℹ️ [Archiver] notify_user=True but user_id is empty, skip sending message.")

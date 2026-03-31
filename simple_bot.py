@@ -35,13 +35,13 @@ def get_bot_response(user_input: str) -> str:
         # Note: The original function used 'llm'.
         # You might need to update this to use 'router_llm' or 'writer_llm'
         # depending on your application logic.
-        response = router_llm.invoke(user_input) # Changed to router_llm for demonstration
+        response = llm_fast.invoke(user_input)
         return response.content
     except Exception as e:
         return f"Sorry, AI brain error: {str(e)}"
 
 def test_bot():
-    print("🤖 Sending request to:", llm.model_name)
+    print("🤖 Sending request to:", llm_fast.model_name)
     print("✅ Response:", get_bot_response("Hello!"))
 
 if __name__ == "__main__":

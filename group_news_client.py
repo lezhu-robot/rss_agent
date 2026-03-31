@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone as dt_timezone
 from typing import Any, Dict, List, Optional
 
@@ -22,7 +23,11 @@ def _normalize_article(raw_article: Any, category: Optional[str]) -> Dict[str, A
     if not isinstance(raw_article, dict):
         raise ValueError(f"article must be an object, got {type(raw_article).__name__}")
 
+    import re
     title = str(raw_article.get("title") or "").strip()
+    # Strip markdown links e.g. [text](url) -> text
+    title = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', title)
+    title = re.sub(r'\s+', ' ', title).strip()
     source_url = str(raw_article.get("sourceURL") or "").strip()
     published_at = str(raw_article.get("publishedAt") or "").strip()
     summary = str(raw_article.get("summary") or "").strip()
@@ -122,6 +127,35 @@ def fetch_group_news(
                 error=str(exc),
                 raw_article=raw_article,
             )
+
+    if keyword_groups and normalized_articles:
+        filtered_articles = []
+        for article in normalized_articles:
+            text_to_search = (article["title"] + " " + article["summary"] + " " + article["sourceName"]).lower()
+            group_matches = []
+            for group in keyword_groups:
+                match = False
+                for kw in group:
+                    # For pure alphabetic keywords, use word boundaries to avoid substring matches
+                    # e.g. prevent "ig" from matching "significant"
+                    if kw.replace(" ", "").isalpha():
+                        pattern = r'\b' + re.escape(kw) + r'\b'
+                        if re.search(pattern, text_to_search, flags=re.IGNORECASE):
+                            match = True
+                            break
+                    else:
+                        if kw.lower() in text_to_search:
+                            match = True
+                            break
+                group_matches.append(match)
+            
+            if keyword_group_mode.upper() == "AND":
+                if all(group_matches):
+                    filtered_articles.append(article)
+            else:
+                if any(group_matches):
+                    filtered_articles.append(article)
+        normalized_articles = filtered_articles
 
     _log(
         "response",
