@@ -24,7 +24,7 @@
     ],
     "keyword_group_mode": "OR",
     "interval_minutes": 60,
-    "overlap_minutes": 120,
+    "overlap_minutes": 60,
     "delivery_mode": "all",
     "timezone": "Asia/Shanghai"
   },
@@ -53,7 +53,7 @@
     ],
     "keyword_group_mode": "OR",
     "interval_minutes": 60,
-    "overlap_minutes": 120,
+    "overlap_minutes": 60,
     "delivery_mode": "all",
     "timezone": "Asia/Shanghai"
   },

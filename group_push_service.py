@@ -402,7 +402,11 @@ def _run_group_delivery_once(
 
             sent = send_message(chat_id, message_text, receive_id_type="chat_id")
             if not sent:
+                # 关键修复：推送失败时也更新 last_window_end_at，避免无限重试同一批有害内容
+                # 否则 window_start 会冻结，导致每分钟都拉取并重试同一批被审计拦截的新闻
+                runtime_state["last_window_end_at"] = serialize_runtime_datetime(window_end)
                 runtime_state["last_error"] = "send_message returned False"
+                runtime_dirty = True
                 _log(
                     send_result="send_failed",
                     content_type="news" if has_news else "no_news",
@@ -413,7 +417,11 @@ def _run_group_delivery_once(
                 continue
 
             # Update sent article keys (rolling buffer, keep last N)
-            all_sent_keys = list(prev_sent_keys | set(new_article_keys))
+            old_keys_list = runtime_state.get("sent_article_keys") or []
+            new_keys_set = set(new_article_keys)
+            
+            # Preserve order: keep old keys (if not in new keys), then append new keys
+            all_sent_keys = [k for k in old_keys_list if k not in new_keys_set] + new_article_keys
             if len(all_sent_keys) > _MAX_SENT_KEYS:
                 all_sent_keys = all_sent_keys[-_MAX_SENT_KEYS:]
             runtime_state["sent_article_keys"] = all_sent_keys

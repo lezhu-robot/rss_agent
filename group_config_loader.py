@@ -111,6 +111,7 @@ def build_default_runtime_state(now: datetime = None) -> Dict[str, Any]:
         "last_success_at": None,
         "last_window_end_at": None,
         "last_error": None,
+        "sent_article_keys": [],
     }
 
 
@@ -351,6 +352,11 @@ def ensure_runtime_state(
         last_error = str(last_error)
         changed = True
 
+    sent_article_keys = raw_state.get("sent_article_keys", [])
+    if not isinstance(sent_article_keys, list):
+        sent_article_keys = []
+        changed = True
+
     normalized_state = {
         "last_sent_at": _serialize_datetime(last_sent_at) if last_sent_at else default_state["last_sent_at"],
         "next_run_at": _serialize_datetime(next_run_at) if next_run_at else default_state["next_run_at"],
@@ -362,6 +368,7 @@ def ensure_runtime_state(
             else default_state["last_window_end_at"]
         ),
         "last_error": last_error if last_error else default_state["last_error"],
+        "sent_article_keys": sent_article_keys,
     }
 
     previous_state = runtime_data.get(chat_id)

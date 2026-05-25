@@ -271,6 +271,34 @@ class FeishuDocWriter:
             }
         }
 
+    def create_body_text_block(self, text: str, url: str = "") -> Dict:
+        """构建普通文本Block（支持超链接）"""
+        text_run: Dict[str, Any] = {"content": text}
+        if url:
+            text_run["text_element_style"] = {"link": {"url": url}}
+        return {
+            "block_type": 2,
+            "text": {
+                "elements": [{"text_run": text_run}],
+                "style": {}
+            }
+        }
+
+    def create_body_bold_text_block(self, text: str, url: str = "") -> Dict:
+        """构建普通文本加粗Block（支持超链接）"""
+        text_run: Dict[str, Any] = {"content": text}
+        text_style: Dict[str, Any] = {"bold": True}
+        if url:
+            text_style["link"] = {"url": url}
+        text_run["text_element_style"] = text_style
+        return {
+            "block_type": 2,
+            "text": {
+                "elements": [{"text_run": text_run}],
+                "style": {}
+            }
+        }
+
     def write_daily_news_to_wiki(self, wiki_token: str, all_categories_news: Dict[str, Dict]) -> bool:
         """
         写入每日新闻到Wiki (插入到第一个高亮块之后)
@@ -293,6 +321,9 @@ class FeishuDocWriter:
         blocks_to_write.append(self.create_heading_block(current_date, level=2))
 
         # 遍历类别
+        cn_nums = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+                    "十一", "十二", "十三", "十四", "十五"]
+        
         for category, briefing in all_categories_news.items():
             # 赛道标题 H3
             blocks_to_write.append(self.create_heading_block(str(category), level=3))
@@ -301,55 +332,78 @@ class FeishuDocWriter:
                 blocks_to_write.append(self.create_text_block("暂无数据"))
                 continue
             
-            # 2.1 今日头条（加粗文本 + 无序列表）
-            headlines = briefing.get("headlines")
-            blocks_to_write.append(self.create_bold_text_block("── 🔥 今日头条 ──"))
-            if isinstance(headlines, list) and headlines:
-                for hl in headlines:
-                    if isinstance(hl, dict):
-                        safe_title = str(hl.get("title") or "无标题").strip()
-                        safe_url = self.normalize_http_url(hl.get("url"))
-                        blocks_to_write.append(
-                            self.create_ordered_list_block(safe_title, safe_url)
-                        )
-            else:
-                blocks_to_write.append(self.create_text_block("暂无数据"))
-
-            clusters = briefing.get("clusters")
-            if not isinstance(clusters, list):
-                clusters = []
-
-            # 2.2 深度专题（加粗文本 + 无序列表）
-            blocks_to_write.append(self.create_bold_text_block("── 📂 深度专题 ──"))
-            if not clusters:
-                blocks_to_write.append(self.create_text_block("暂无数据"))
-                continue
-
-            valid_cluster_count = 0
-            for cluster in clusters:
-                if not isinstance(cluster, dict):
-                    continue
-                valid_cluster_count += 1
-                cluster_name = str(cluster.get("name") or "未命名专题")
-
-                blocks_to_write.append(self.create_bold_text_block(f"▸ {cluster_name}"))
-
-                cluster_items = cluster.get("items")
-                if not isinstance(cluster_items, list) or not cluster_items:
-                    blocks_to_write.append(self.create_text_block("暂无条目"))
-                    continue
-
-                for item in cluster_items:
-                    if not isinstance(item, dict):
+            # 自动检测数据格式：NewsDigest (有 events) vs NewsBriefing (有 headlines)
+            events = briefing.get("events")
+            if isinstance(events, list) and events:
+                # --- 新格式 (NewsDigest): 阿拉伯数字 + 超链接标题 + 点号子要点 ---
+                for i, event in enumerate(events, 1):
+                    if not isinstance(event, dict):
                         continue
-                    safe_summary = str(item.get("summary") or "无摘要").strip()
-                    safe_url = self.normalize_http_url(item.get("url"))
+                    headline = str(event.get("headline") or "未命名事件")
+                    event_url = self.normalize_http_url(event.get("url"))
                     blocks_to_write.append(
-                        self.create_ordered_list_block(safe_summary, safe_url)
+                        self.create_body_bold_text_block(f"{i}、{headline}", event_url)
                     )
+                    points = event.get("points")
+                    if isinstance(points, list):
+                        for pt in points:
+                            if isinstance(pt, dict):
+                                pt_text = str(pt.get("text") or "")
+                            else:
+                                pt_text = str(pt)
+                            if pt_text:
+                                blocks_to_write.append(
+                                    self.create_body_text_block(f"· {pt_text}")
+                                )
+            else:
+                # --- 旧格式 (NewsBriefing): headlines + clusters ---
+                headlines = briefing.get("headlines")
+                blocks_to_write.append(self.create_bold_text_block("── 🔥 今日头条 ──"))
+                if isinstance(headlines, list) and headlines:
+                    for hl in headlines:
+                        if isinstance(hl, dict):
+                            safe_title = str(hl.get("title") or "无标题").strip()
+                            safe_url = self.normalize_http_url(hl.get("url"))
+                            blocks_to_write.append(
+                                self.create_ordered_list_block(safe_title, safe_url)
+                            )
+                else:
+                    blocks_to_write.append(self.create_text_block("暂无数据"))
 
-            if valid_cluster_count == 0:
-                blocks_to_write.append(self.create_text_block("暂无数据"))
+                clusters = briefing.get("clusters")
+                if not isinstance(clusters, list):
+                    clusters = []
+
+                blocks_to_write.append(self.create_bold_text_block("── 📂 深度专题 ──"))
+                if not clusters:
+                    blocks_to_write.append(self.create_text_block("暂无数据"))
+                    continue
+
+                valid_cluster_count = 0
+                for cluster in clusters:
+                    if not isinstance(cluster, dict):
+                        continue
+                    valid_cluster_count += 1
+                    cluster_name = str(cluster.get("name") or "未命名专题")
+
+                    blocks_to_write.append(self.create_bold_text_block(f"▸ {cluster_name}"))
+
+                    cluster_items = cluster.get("items")
+                    if not isinstance(cluster_items, list) or not cluster_items:
+                        blocks_to_write.append(self.create_text_block("暂无条目"))
+                        continue
+
+                    for item in cluster_items:
+                        if not isinstance(item, dict):
+                            continue
+                        safe_summary = str(item.get("summary") or "无摘要").strip()
+                        safe_url = self.normalize_http_url(item.get("url"))
+                        blocks_to_write.append(
+                            self.create_ordered_list_block(safe_summary, safe_url)
+                        )
+
+                if valid_cluster_count == 0:
+                    blocks_to_write.append(self.create_text_block("暂无数据"))
 
         # 3. 确定插入位置
         insert_index = self.find_first_callout_index(document_id)

@@ -1,4 +1,4 @@
-from agent_graph import NewsBriefing
+from agent_graph import NewsBriefing, NewsDigest
 import json
 from datetime import datetime
 
@@ -164,4 +164,86 @@ def build_manage_subscribe_card(current_subs: list, all_categories: list, status
         },
         "elements": elements,
     }
+    return json.dumps(card, ensure_ascii=False)
+
+
+# --- 中文数字编号 ---
+_CN_NUMS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+            "十一", "十二", "十三", "十四", "十五"]
+
+
+def build_digest_card(digest: NewsDigest, category: str = "AI", generated_at: str = None) -> str:
+    """
+    构建新闻速递卡片（v2 格式）
+    结构：大标题 + 编号子要点，风格对标腾讯 AI 新闻速递
+    """
+    # 0. 动态标题映射
+    title_map = {
+        "AI": "AI 新闻速递",
+        "PGC": "PGC 行业动态",
+    }
+    card_title = title_map.get(category, f"{category} 新闻速递")
+
+    # 1. 格式化时间字符串
+    time_str = datetime.now().strftime('%m-%d %H:%M')
+    if generated_at:
+        try:
+            if isinstance(generated_at, str):
+                dt = datetime.fromisoformat(generated_at)
+            else:
+                dt = generated_at
+            time_str = dt.strftime('%m-%d %H:%M')
+        except:
+            pass
+
+    # 2. 组装速递内容（lark_md 格式）
+    content_parts = []
+    for i, event in enumerate(digest.events, 1):
+        # 大标题：阿拉伯数字 + 加粗 + 超链接（如有 URL）
+        headline_text = event.headline
+        event_url = getattr(event, 'url', '') or ''
+        if event_url:
+            content_parts.append(f"**{i}、[{headline_text}]({event_url})**")
+        else:
+            content_parts.append(f"**{i}、{headline_text}**")
+        # 子要点：点号前缀，紧跟标题不换行
+        for point in event.points:
+            point_text = point.text if hasattr(point, 'text') else str(point)
+            content_parts.append(f"· {point_text}")
+        content_parts.append("")  # 空行分隔不同事件
+
+    full_content = "\n".join(content_parts).strip()
+
+    # 3. 组装最终 Card JSON
+    card = {
+        "config": {
+            "wide_screen_mode": True
+        },
+        "header": {
+            "template": "blue",
+            "title": {
+                "content": f"{card_title}  {time_str}",
+                "tag": "plain_text"
+            }
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "content": full_content,
+                    "tag": "lark_md"
+                }
+            },
+            {
+                "tag": "note",
+                "elements": [
+                    {
+                        "content": f"⏰ 生成于 {time_str}",
+                        "tag": "plain_text"
+                    }
+                ]
+            }
+        ]
+    }
+
     return json.dumps(card, ensure_ascii=False)

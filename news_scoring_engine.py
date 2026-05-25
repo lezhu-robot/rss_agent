@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import requests
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,9 +37,11 @@ from news_scoring_spec_v2 import (
     compute_heat_score,
     compute_prominence_score_from_validated_tiers,
     compute_source_volume_penalty,
+    compute_source_quality_factor,
     get_category_cluster_labels,
     get_category_strategy,
     get_common_weight_key_by_category,
+    get_category_theme,
 )
 
 
@@ -277,9 +280,10 @@ def _invoke_structured_step(
 
 def _choose_step_a_batch_prompt(category: str) -> str:
     """根据大类选择 Step A（分类/主体抽取）对应的系统提示词。"""
+    theme = get_category_theme(category)
     if category == "AI":
-        return STEP_A_CLASSIFY_BATCH_PROMPT
-    return STEP_A_CLASSIFY_BATCH_PROMPT_NON_AI
+        return STEP_A_CLASSIFY_BATCH_PROMPT.format(category_theme=theme)
+    return STEP_A_CLASSIFY_BATCH_PROMPT_NON_AI.format(category_theme=theme)
 
 
 def _choose_step_b_batch_prompt(mode: str) -> str:
@@ -287,6 +291,103 @@ def _choose_step_b_batch_prompt(mode: str) -> str:
     if mode == "full":
         return STEP_B_COMMON_SCORE_BATCH_PROMPT
     return STEP_B_COMMON_SCORE_DIRECT_BATCH_PROMPT
+
+
+def _is_url_working(url: str) -> bool:
+    """用轻量 HEAD/GET 请求校验 URL 是否有效（不是 404 或连接失败）"""
+    if not url:
+        return False
+    if not url.startswith("http"):
+        return False
+    try:
+        # 使用 HEAD 请求，设置 2.5 秒超时，跟随重定向，伪装 User-Agent
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.head(url, headers=headers, timeout=2.5, allow_redirects=True)
+        if resp.status_code == 404:
+            return False
+        # 如果返回不支持 HEAD (如 405/403/400)，用 GET 验证
+        if resp.status_code in (405, 403, 400):
+            resp = requests.get(url, headers=headers, timeout=2.5, stream=True)
+            return resp.status_code != 404
+        return True
+    except Exception:
+        # 异常（如超时）均判定为失效，触发自愈或递补
+        return False
+
+
+def heal_event_urls(
+    results: List[EventScoringResult],
+    deduped_payload: Any,
+    dedup_trace: Optional[Dict[str, Any]],
+) -> List[EventScoringResult]:
+    """
+    自愈事件 URL：
+    1. 并发检测排名前列的事件 URL。
+    2. 如果代表链接失效 (404/无法访问)，在事件簇（cluster）中寻找其他备用稿的链接。
+    3. 如果簇内所有链接都失效，则放弃该事件，由后续高分事件递补。
+    """
+    if not results:
+        return []
+
+    # 1. 建立文章 ID 到原始文章对象的映射
+    id_to_article = {}
+    if isinstance(deduped_payload, dict) and isinstance(deduped_payload.get("data"), list):
+        for art in deduped_payload["data"]:
+            art_id = str(art.get("id") or "")
+            if art_id:
+                id_to_article[art_id] = art
+
+    # 2. 建立 event_id 到其成员文章 ID 列表的映射
+    event_to_members = {}
+    if isinstance(dedup_trace, dict) and isinstance(dedup_trace.get("clusters"), list):
+        for c in dedup_trace["clusters"]:
+            kept_id = str(c.get("kept_id") or "")
+            member_ids = c.get("member_ids") or []
+            if kept_id:
+                event_to_members[kept_id] = [str(mid) for mid in member_ids]
+                event_to_members[f"event_{kept_id}"] = [str(mid) for mid in member_ids]
+
+    # 我们并发检测前 30 个候选事件，防止过滤后不够 topk 条
+    candidates = results[:30]
+    remaining = results[30:]
+
+    def check_and_heal(res: EventScoringResult) -> Optional[EventScoringResult]:
+        url = res.selected_url or ""
+        if _is_url_working(url):
+            return res
+
+        print(f"⚠️ [Self-Healing] Default URL is broken (404/timeout) for event {res.event_id}: {url}")
+        
+        # 尝试从事件簇中寻找备用链接
+        member_ids = event_to_members.get(res.event_id) or []
+        for mid in member_ids:
+            alt_art = id_to_article.get(mid)
+            if alt_art:
+                alt_url = alt_art.get("sourceURL") or ""
+                if alt_url and alt_url != url:
+                    print(f"🔄 [Self-Healing] Testing backup URL from cluster: {alt_url}")
+                    if _is_url_working(alt_url):
+                        print(f"✅ [Self-Healing] Successfully healed event {res.event_id} with backup URL: {alt_url}")
+                        res.selected_url = alt_url
+                        return res
+                        
+        # 实在没有可用链接，放弃该事件，交由递补机制
+        print(f"❌ [Self-Healing] Abandoning event {res.event_id} due to no working URL.")
+        return None
+
+    healed_results = []
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        future_to_res = {executor.submit(check_and_heal, r): r for r in candidates}
+        for future in as_completed(future_to_res):
+            res_val = future.result()
+            if res_val:
+                healed_results.append(res_val)
+
+    # 保持原来的排序
+    healed_results.sort(key=lambda x: x.final_score, reverse=True)
+    return healed_results + remaining
 
 
 def score_events(
@@ -498,6 +599,9 @@ def score_events(
         cluster_label = c.cluster_label
         if cluster_label not in allowed_labels:
             raise ValueError(f"invalid_cluster_label:{event_id}:{cluster_label}")
+        if cluster_label == "与主题无关":
+            print(f"🗑️ [Scorer] Filtering out unrelated event {event_id}: {rep.title}")
+            continue
         subjects = c.event_subjects or ([] if not c.primary_subject else [c.primary_subject])
         tiers = tiers_map[event_id]
         penalty = penalty_map[event_id]
@@ -540,8 +644,13 @@ def score_events(
                 common_score=_weighted_score(common_weights, common_values),
             )
 
+        # 来源质量系数：降权二手聚合源，提权官方/一手源
+        source_quality = compute_source_quality_factor(
+            rep.sourceURL or "", rep.sourceName or ""
+        )
         final_score = round(
-            float(common.common_score) - penalty_weight * float(penalty.penalty_score),
+            (float(common.common_score) - penalty_weight * float(penalty.penalty_score))
+            * source_quality,
             4,
         )
         hits = [x.mapped_entity for x in tiers if x.status == "accepted" and x.mapped_entity]
@@ -571,6 +680,16 @@ def score_events(
         )
 
     results.sort(key=lambda x: x.final_score, reverse=True)
+    
+    # URL 连通性自愈与校验
+    try:
+        heal_t0 = time.perf_counter()
+        results = heal_event_urls(results, deduped_payload, dedup_trace)
+        meta["timing_ms"]["url_healing_ms"] = int((time.perf_counter() - heal_t0) * 1000)
+    except Exception as e:
+        print(f"⚠️ [Self-Healing] Failed to run URL self-healing: {e}")
+        meta["warnings"].append(f"url_healing_failed:{str(e)}")
+
     scored_events = [x.model_dump() for x in results]
     if topk > 0:
         meta["topk_preview"] = [x.event_id for x in results[:topk]]

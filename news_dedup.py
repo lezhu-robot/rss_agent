@@ -225,7 +225,42 @@ def dedupe_news_payload(
     }
 
     for cluster_id, cluster in enumerate(exact_clusters, 1):
-        rep_exact_idx = min(cluster)
+        # 选择代表稿：结合来源质量和新鲜度（索引越小越新）进行评分
+        best_idx = cluster[0]
+        best_score = -999.0
+        for idx in cluster:
+            item = exact_keep[idx]
+            url = str(item.get("sourceURL") or "").lower()
+            
+            # 基础分
+            score = 1.0
+            
+            # 高质量官方与一手源加分
+            high_quality_domains = [
+                "openai.com", "blog.google", "ai.meta.com", "about.fb.com",
+                "techcrunch.com", "theverge.com", "gamesindustry.biz",
+                "pocketgamer.com", "billboard.com", "bloomberg.com",
+                "nytimes.com", "reuters.com", "wsj.com"
+            ]
+            # 中文聚合站及不稳定源降分（避免首选 broken 链接或转述站）
+            low_quality_domains = [
+                "testingcatalog.com", "36kr.com", "qbitai.com", "jiqizhixin.com",
+                "aiera", "aibase", "aihot"
+            ]
+            
+            if any(dom in url for dom in high_quality_domains):
+                score += 0.5
+            elif any(dom in url for dom in low_quality_domains):
+                score -= 0.3
+            
+            # 越新（索引越小）的分数微加，作为同质量源的 tie-breaker
+            score -= idx * 0.0001
+            
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+                
+        rep_exact_idx = best_idx
         final_keep_indices.append(rep_exact_idx)
         rep_item = exact_keep[rep_exact_idx]
         rep_id = _article_id(rep_item, rep_exact_idx)

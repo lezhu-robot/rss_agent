@@ -31,6 +31,21 @@ def _escape_lark_md_text(text: str) -> str:
     return escaped
 
 
+# 飞书安全审计会拦截中国手机号格式 (1[3-9]xxxxxxxxx)，将命中的数字串打码
+_PHONE_RE = re.compile(r'(?<!\d)1[3-9]\d{9}(?!\d)')
+# 飞书安全审计还会将 9 位纯数字误判为 US_PASSPORT（美国护照号），
+# 例如新闻中出现的模型参数量、产品编号等。将其部分打码以绕过审计。
+_PASSPORT_LIKE_RE = re.compile(r'(?<![A-Za-z\d])\d{9}(?![A-Za-z\d])')
+
+def _mask_phone_numbers(text: str) -> str:
+    """Replace strings matching Chinese mobile phone pattern with '***' to bypass Feishu audit."""
+    return _PHONE_RE.sub('***', str(text or ""))
+
+def _mask_passport_like_numbers(text: str) -> str:
+    """Mask standalone 9-digit numbers that Feishu audit flags as US_PASSPORT."""
+    return _PASSPORT_LIKE_RE.sub(lambda m: m.group()[:3] + '***' + m.group()[-2:], str(text or ""))
+
+
 def _compact_summary(summary: str, title: str, max_length: int = 96) -> str:
     compact = " ".join(str(summary or "").split())
     compact = re.sub(r"^(?:据悉|报道称|消息称|据[^，。；:：]{1,24}(?:报道|消息|称))[：:，, ]*", "", compact)
@@ -94,9 +109,9 @@ def _article_sort_key(article: dict, timezone_name: str):
 
 
 def _format_article_markdown(article: dict, window_end: datetime, timezone_name: str) -> str:
-    original_title = article.get("title") or ""
-    original_summary = article.get("summary") or ""
-    
+    original_title = _mask_passport_like_numbers(_mask_phone_numbers(article.get("title") or ""))
+    original_summary = _mask_passport_like_numbers(_mask_phone_numbers(article.get("summary") or ""))
+
     flat_title = " ".join(original_title.split())
     flat_summary = " ".join(original_summary.split())
     title_clean = re.sub(r'[\.。…\s]+$', '', flat_title)

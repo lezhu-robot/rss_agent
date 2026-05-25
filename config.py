@@ -1,7 +1,34 @@
 # RSS Agent Configuration
 
 # 每天需要生成日报的类别列表（供定时任务批量生成与分发）
-DAILY_NEWS_CATEGORIES = ["AI", "GAMES", "MUSIC"]
+DAILY_NEWS_CATEGORIES = ["AI", "PGC"]
+
+# --- 每日日报展示分类（数据采集仍按 DAILY_NEWS_CATEGORIES，展示层合并） ---
+# AI 日报 = AI 类新闻；PGC 日报 = 游戏 + 音乐 + 竞品公司动态
+DAILY_DISPLAY_CATEGORIES = {
+    "AI": {"sources": ["AI"], "topk": 10},
+    "PGC": {
+        "sources": ["GAMES", "MUSIC", "COMPETITORS"],
+        "topk": 15,
+        # 补充：从 AI 分类中按关键词过滤竞品动态
+        # （因为 YouTube Blog、Meta Newsroom 等 Feed 归在 AI 类下）
+        "competitor_keywords_from": ["AI"],
+        "competitor_keywords": [
+            "YouTube", "YTB", "YT", "油管",
+            "Instagram", "IG", "Ins",
+            "Facebook", "FB", "脸书",
+            "Meta",
+            "Twitter", "推特",
+        ],
+    },
+}
+
+# 每日日报推送时间（北京时间 HH:MM）
+# 两次推送：中国早晨 09:00 + 美西早晨（BJT 00:00）
+DAILY_PUSH_TIMES = ["09:00", "00:00"]
+
+# 每次日报拉取的新闻时间窗口（小时），略大于 12h 确保不漏
+DAILY_FETCH_WINDOW_HOURS = 14
 # 飞书 Wiki 空间 token（用于归档日报到 Wiki）
 WIKI_TOKEN = "S0Ckw3KCiiezJakYNj0crAvrnNR"
 

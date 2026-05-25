@@ -15,7 +15,7 @@ def format_news_api_datetime(value: datetime) -> str:
     return normalized.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def post_news_search(payload: dict, timeout: int = 10):
+def post_news_search(payload: dict, timeout: int = 30):
     headers = {"Content-Type": "application/json"}
     return requests.post(NEWS_API_URL, headers=headers, json=payload, timeout=timeout)
 
@@ -49,7 +49,7 @@ def fetch_news(
             f"🌍 Fetching news category={category}, "
             f"startDateTime={start_dt_str}, endDateTime={end_dt_str}"
         )
-        resp = post_news_search(payload, timeout=10)
+        resp = post_news_search(payload, timeout=30)
         if resp.status_code == 200:
             data = resp.json()
             # 假设返回的是列表，或者 data 字段里是列表

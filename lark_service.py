@@ -150,70 +150,83 @@ def _is_duplicate_expand_action(action_key: str) -> bool:
 
 # --- 任务分离：生成与推送 ---
 
-from config import DAILY_NEWS_CATEGORIES
+from config import DAILY_NEWS_CATEGORIES, DAILY_DISPLAY_CATEGORIES, DAILY_FETCH_WINDOW_HOURS
 
 def generate_news_task(force=True):
     """
-    👨‍🍳 厨师任务：每隔2小时（或启动时）生成新闻并存入数据库（不推送）
+    👨‍🍳 厨师任务：生成新闻速递并存入数据库（不推送）
     
-    改进：直接从 config.py 读取类别，作为参数传递给 agent，不依赖数据库查询
+    v2 改版：按 DAILY_DISPLAY_CATEGORIES 生成（AI / PGC），
+    PGC 会合并 GAMES + MUSIC 的新闻源。
     """
     today = date.today().isoformat()
     
-    print(f"👨‍🍳 [Chef] Starting news generation (Force={force}) for categories: {DAILY_NEWS_CATEGORIES}...")
+    print(f"👨‍🍳 [Chef] Starting news generation (Force={force}) for display categories: {list(DAILY_DISPLAY_CATEGORIES.keys())}...")
 
-    for category in DAILY_NEWS_CATEGORIES:
-        # 关键修复：每个类别使用独立的 thread_id，避免 LangGraph state 污染
-        # 例如: system_daily_bot_AI, system_daily_bot_GAMES, system_daily_bot_MUSIC
-        category_user_id = f"system_daily_bot_{category}"
+    for display_cat, cat_config in DAILY_DISPLAY_CATEGORIES.items():
+        source_cats = cat_config["sources"]
+        topk = cat_config["topk"]
+        category_user_id = f"system_daily_bot_{display_cat}"
         
-        # 如果不是强制刷新 (即 Startup 模式)，先检查是否已有饭菜
+        # 如果不是强制刷新，先检查缓存
         if not force:
-            cached = get_cached_news(category, today)
+            cached = get_cached_news(display_cat, today)
             if cached:
-                print(f"⏩ [Chef] Data exists for {category}, skipping generation (Startup check).")
+                print(f"⏩ [Chef] Data exists for {display_cat}, skipping generation (Startup check).")
                 continue
 
         try:
-            # 1. 生成新闻
-            # 关键改动：直接传入 user_preference=category，跳过 router 解析和数据库查询
-            # force_refresh=True 强制重新抓取新闻，不使用缓存
-            content, briefing_data = run_agent(
-                user_id=category_user_id,  # ← 使用独立的 thread_id
-                text="生成日报",  # 文本不再重要，仅作占位
+            # 生成新闻速递
+            content_str, briefing_data = run_agent(
+                user_id=category_user_id,
+                text="生成日报",
                 force_refresh=True,
-                user_preference=category  # 直接传入类别！
+                user_preference=display_cat,
+                source_categories=source_cats,
+                display_topk=topk,
             )
             
-            # 2. 存根
             if briefing_data:
                 briefing_data_str = json.dumps(briefing_data, ensure_ascii=False)
-                save_cached_news(category, content, today, briefing_data_str)
-                print(f"💾 [Chef] Saved cache for {category}. Ready to serve.")
+                save_cached_news(display_cat, content_str, today, briefing_data_str)
+                print(f"💾 [Chef] Saved cache for {display_cat}. Ready to serve.")
             else:
-                print(f"⚠️ [Chef] No data generated for {category}")
+                print(f"⚠️ [Chef] No data generated for {display_cat}")
                 
         except Exception as e:
-            print(f"❌ [Chef] Failed for {category}: {e}")
+            print(f"❌ [Chef] Failed for {display_cat}: {e}")
 
 def push_delivery_task():
-    """🛵 外卖员任务：推送最新的新闻"""
+    """🛵 外卖员任务：推送最新的新闻速递"""
     today = date.today().isoformat()
     subscriptions = list_all_subscriptions()
     
-    
     print(f"🛵 [Delivery] Starting daily push dispatch... ({len(subscriptions)} subscriptions)")
     
+    # 建立旧类别到新展示类别的映射：GAMES->PGC, MUSIC->PGC, AI->AI
+    source_to_display = {}
+    for display_cat, cat_config in DAILY_DISPLAY_CATEGORIES.items():
+        for src in cat_config["sources"]:
+            source_to_display[src] = display_cat
+        source_to_display[display_cat] = display_cat  # 直接订阅 PGC 也支持
+    
+    # 去重：同一用户订阅了 GAMES 和 MUSIC 不应推送两次 PGC
+    pushed = set()  # (user_id, display_cat)
+    
     for user_id, category in subscriptions:
-        # 1. 只是去取货
-        cached_data = get_cached_news(category, today)
+        display_cat = source_to_display.get(category, category)
+        push_key = (user_id, display_cat)
+        if push_key in pushed:
+            continue
+        
+        cached_data = get_cached_news(display_cat, today)
         
         if cached_data and cached_data.get("content"):
-            print(f"📤 [Delivery] Pushing {category} news to {user_id}")
+            print(f"📤 [Delivery] Pushing {display_cat} news to {user_id}")
             send_message(user_id, cached_data["content"])
+            pushed.add(push_key)
         else:
-            print(f"⚠️ [Delivery] No food ready for {user_id}/{category} (Cache miss)")
-            # 可选：这里可以触发一次 generate_news_task() 作为补救
+            print(f"⚠️ [Delivery] No food ready for {user_id}/{display_cat} (Cache miss)")
 
 def daily_archive_and_push_job():
     """统一定时任务：先归档，再推送。"""
@@ -241,23 +254,35 @@ async def lifespan(app: FastAPI):
     init_db()
     
     print("⏰ Starting Scheduler...")
-    # # 1. 厨师任务：北京时间 8:00 - 22:00，每2小时做一次饭
-    # scheduler.add_job(generate_news_task, 'cron', hour='8-22/2', minute=0, timezone=beijing_tz)
-    # 1. 厨师任务：北京时间每天 8:00 执行一次
-    scheduler.add_job(generate_news_task, 'cron', hour=8, minute=0, timezone=beijing_tz)
+    # 1. 厨师任务：一天两次生成（中国早晨 + 美西早晨）
+    scheduler.add_job(generate_news_task, 'cron', hour=8, minute=30, timezone=beijing_tz,
+                      id='generate_morning_cn', replace_existing=True, max_instances=1, coalesce=True)
+    scheduler.add_job(generate_news_task, 'cron', hour=23, minute=30, timezone=beijing_tz,
+                      id='generate_morning_us', replace_existing=True, max_instances=1, coalesce=True)
 
     
     # 2. 也是厨师任务：刚开业（启动服务）时先做一顿
     # 关键：这里 force=False，如果数据库里已经有菜了，就不重做了 (避免热重载时疯狂生成)
     scheduler.add_job(generate_news_task, 'date', run_date=datetime.now(beijing_tz) + timedelta(seconds=5), kwargs={"force": False})
     
-    # 3. 统一任务：北京时间每天 09:10，先归档再推送
+    # 3. 推送+归档任务：一天两次（中国早晨 09:00 + 美西早晨 BJT 00:00）
     scheduler.add_job(
         daily_archive_and_push_job,
         'cron',
-        id='daily_archive_and_push_job',
+        id='daily_push_morning_cn',
         hour=9,
-        minute=10,
+        minute=0,
+        timezone=beijing_tz,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        daily_archive_and_push_job,
+        'cron',
+        id='daily_push_morning_us',
+        hour=0,
+        minute=0,
         timezone=beijing_tz,
         replace_existing=True,
         max_instances=1,
@@ -296,6 +321,8 @@ def run_agent(
     user_preference=None,
     selected_cluster=None,
     selected_category=None,
+    source_categories=None,
+    display_topk=None,
 ):
     """
     运行 LangGraph Agent
@@ -330,6 +357,8 @@ def run_agent(
         "user_preference": user_preference, # [新增] 直接传入偏好类别
         "selected_cluster": selected_cluster,
         "selected_category": selected_category,
+        "source_categories": source_categories,  # [新增] 多源拉取
+        "display_topk": display_topk,  # [新增] 展示 topK
     }
     if force_refresh:
         # 双保险：覆盖 checkpointer 中可能残留的结构化缓存状态
@@ -500,14 +529,14 @@ async def handle_event(request: Request, background_tasks: BackgroundTasks):
                 send_message(operator_id, manage_card)
 
             # 2. 新增：处理手动触发新闻请求
-            elif event_key in ["REQUEST_MUSIC_NEWS", "REQUEST_GAMES_NEWS", "REQUEST_AI_NEWS"]:
+            elif event_key in ["REQUEST_AI_NEWS", "REQUEST_PGC_NEWS"]:
                 _event_log(
                     log_type="menu_branch",
                     event_id=event_id,
                     event_key=event_key,
                     branch="request_news",
                 )
-                # 提取类别: REQUEST_MUSIC_NEWS -> MUSIC
+                # 提取类别: REQUEST_AI_NEWS -> AI, REQUEST_PGC_NEWS -> PGC
                 target_category = event_key.removeprefix("REQUEST_").removesuffix("_NEWS")
                 print(f"🔍 [Menu] 用户 {operator_id} 请求获取：{target_category} 新闻")
 
@@ -697,7 +726,7 @@ def archive_daily_news_to_wiki(user_id=None, notify_user=True):
         
         # 1. 准备数据
         today = date.today().isoformat()
-        categories = DAILY_NEWS_CATEGORIES
+        categories = list(DAILY_DISPLAY_CATEGORIES.keys())
         all_news_data = {}
         
         for cat in categories:
